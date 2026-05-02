@@ -24,22 +24,25 @@ pulse_half_len = 50;
 carrier_freq = 20;
 
 %% === TRANSMITTER ===
-str = '012345 hello world jzxv//[]-=';
-[symbols, num_symbols, tx_passband, t] = transmit(str, oversamp, pulse_half_len, carrier_freq, symbol_period, 0.3);
+str = 'p';
+disp("message")
+disp(str)
+[symbols, num_symbols, tx_passband, t] = transmit(str, oversamp, pulse_half_len, carrier_freq, symbol_period);
 
 %% === RECEIVER ===
-[soft_decisions, hard_decisions] = receive(tx_passband, t, oversamp, pulse_half_len, carrier_freq, num_symbols,true);
+[soft_decisions, hard_decisions] = receive(tx_passband, t, oversamp, pulse_half_len, carrier_freq, num_symbols, true);
 
 %% === ASSESSMENT ===
 [cluster_var, symbol_error_pct, reconstructed_message] = assess(soft_decisions, hard_decisions, symbols);
 disp(cluster_var)
 disp(symbol_error_pct)
+disp("reconstructed:")
 disp(reconstructed_message)
 
 
 %% === FUNCTIONS ===
 
-function [symbols, num_symbols, tx_passband, t] = transmit(str, oversamp, pulse_half_len, carrier_freq, symbol_period,timing_offset, do_plot)
+function [symbols, num_symbols, tx_passband, t] = transmit(str, oversamp, pulse_half_len, carrier_freq, symbol_period, do_plot)
     if nargin < 7, do_plot = true; end
 
     symbols     = letters2apsk(str);
@@ -53,13 +56,14 @@ function [symbols, num_symbols, tx_passband, t] = transmit(str, oversamp, pulse_
     up_q(1:oversamp:num_symbols*oversamp) = imag(symbols);
 
     % Pulse shape
-    pulse = hamming(oversamp);
+    %pulse = hamming(oversamp);
+    pulse = srrc(l, 0.3, oversamp, 0);
     tx_i  = filter(pulse, 1, up_i);
     tx_q  = filter(pulse, 1, up_q);
     if do_plot, figure(), plotspec(tx_i + 1j*tx_q, 1/oversamp); end
 
-    % Time vector
-    t = (1/oversamp : 1/oversamp : length(tx_i)/oversamp) * symbol_period + timing_offset;
+    % Time vector with timing offset
+    t = (1/oversamp : 1/oversamp : length(tx_i)/oversamp) * symbol_period;
 
     % IQ modulate
     carrier_i   =  cos(2*pi*carrier_freq*t);
@@ -96,11 +100,12 @@ end
 function [mf_i, mf_q, baseband] = matched_filter(filtered_i, filtered_q, oversamp, do_plot)
     if nargin < 4, do_plot = true; end
 
-    pulse          = hamming(oversamp);
-    mf             = fliplr(pulse) / (pow(pulse) * oversamp);
-    mf_i           = filter(mf, 1, filtered_i);
-    mf_q           = filter(mf, 1, filtered_q);
-    baseband       = mf_i + 1j*mf_q;
+    %pulse    = hamming(oversamp);
+    pulse = srrc(50, 0.3, oversamp, 0);
+    mf       = fliplr(pulse) / (pow(pulse) * oversamp);
+    mf_i     = filter(mf, 1, filtered_i);
+    mf_q     = filter(mf, 1, filtered_q);
+    baseband = mf_i + 1j*mf_q;
     if do_plot, figure(), plotspec(baseband, 1/oversamp); end
 end
 
@@ -118,15 +123,18 @@ function plot_eye_diagram(mf_i, oversamp, pulse_half_len, do_plot)
 end
 
 
-function soft_decisions = downsample_to_symbols(baseband, oversamp, pulse_half_len, num_symbols, do_plot)
-    if nargin < 5, do_plot = true; end
+function [soft_decisions, hard_decisions] = receive(tx_passband, t, oversamp, pulse_half_len, carrier_freq, num_symbols, do_plot)
+    if nargin < 7, do_plot = true; end
 
-    sample_start   = 0.5*pulse_half_len + oversamp;
-    soft_decisions = baseband(sample_start : oversamp : sample_start + (num_symbols-1)*oversamp);
-    if do_plot, figure(), plot(real(soft_decisions), imag(soft_decisions), '*'); end
+    [demod_i, demod_q]       = iq_demodulate(tx_passband, t, carrier_freq, oversamp, do_plot);
+    [filtered_i, filtered_q] = lowpass_filter(demod_i, demod_q, pulse_half_len, oversamp, do_plot);
+    [mf_i, mf_q, baseband]   = matched_filter(filtered_i, filtered_q, oversamp, do_plot);
+    plot_eye_diagram(mf_i, oversamp, pulse_half_len, do_plot);
+
+    [soft_decisions, ~]      = timing_recovery_DD(baseband, num_symbols, oversamp, pulse_half_len, do_plot);
+    %soft_decisions               = downsample_to_symbols(baseband, oversamp, pulse_half_len, num_symbols, do_plot);
+    hard_decisions           = decide(soft_decisions);
 end
-
-
 
 
 function hard_decisions = decide(soft_decisions)
@@ -138,17 +146,73 @@ function hard_decisions = decide(soft_decisions)
     end
 end
 
+function soft_decisions = downsample_to_symbols(baseband, oversamp, pulse_half_len, num_symbols, do_plot)
+    if nargin < 5, do_plot = true; end
 
-function [soft_decisions, hard_decisions] = receive(tx_passband, t, oversamp, pulse_half_len, carrier_freq, num_symbols, do_plot)
-    if nargin < 7, do_plot = true; end
+    sample_start   = 0.5*pulse_half_len + oversamp;
+    soft_decisions = baseband(sample_start : oversamp : sample_start + (num_symbols-1)*oversamp);
+    if do_plot, figure(), plot(real(soft_decisions), imag(soft_decisions), '*'); end
+end
 
-    [demod_i, demod_q]           = iq_demodulate(tx_passband, t, carrier_freq, oversamp, do_plot);
-    [filtered_i, filtered_q]     = lowpass_filter(demod_i, demod_q, pulse_half_len, oversamp, do_plot);
-    [mf_i, mf_q, baseband]       = matched_filter(filtered_i, filtered_q, oversamp, do_plot);
-    plot_eye_diagram(mf_i, oversamp, pulse_half_len, do_plot);
-    soft_decisions               = downsample_to_symbols(baseband, oversamp, pulse_half_len, num_symbols, do_plot);
-   % [soft_decisions ,offset_history]  = timing_recovery_DD(baseband, num_symbols, oversamp, pulse_half_len);
-    hard_decisions               = decide(soft_decisions);
+
+function [sym_estimates, offset_history] = timing_recovery_DD(x, n, oversamp, pulse_half_len, do_plot)
+    if nargin < 5, do_plot = true; end
+
+    global CONSTELLATION
+
+    step_size  = 0.01;
+    deriv_step = 0.1;
+
+    sample_pos     = pulse_half_len + 1;
+    timing_offset  = 0;
+    sym_estimates  = zeros(1, n);
+    offset_history = zeros(1, n);
+    k = 0;
+
+   % while sample_pos < length(x) - 2 * pulse_half_len * oversamp
+    while k < n && sample_pos < length(x) - pulse_half_len
+        k = k + 1;
+
+        % complex-aware sinc interpolation
+        x_now   = interpsinc(real(x), sample_pos + timing_offset,              pulse_half_len) ...
+                + 1j * interpsinc(imag(x), sample_pos + timing_offset,              pulse_half_len);
+
+        x_right = interpsinc(real(x), sample_pos + timing_offset + deriv_step, pulse_half_len) ...
+                + 1j * interpsinc(imag(x), sample_pos + timing_offset + deriv_step, pulse_half_len);
+
+        x_left  = interpsinc(real(x), sample_pos + timing_offset - deriv_step, pulse_half_len) ...
+                + 1j * interpsinc(imag(x), sample_pos + timing_offset - deriv_step, pulse_half_len);
+
+        slope = x_right - x_left;
+
+        % hard decision against 16-APSK constellation
+        [~, idx] = min(abs(x_now - CONSTELLATION));
+        decision = CONSTELLATION(idx);
+
+        % DD update
+        timing_offset = timing_offset + step_size * real(slope * conj(decision - x_now));
+
+        sample_pos        = sample_pos + oversamp;
+        sym_estimates(k)  = x_now;
+        offset_history(k) = timing_offset;
+    end
+
+    sym_estimates  = sym_estimates(1:k);
+    offset_history = offset_history(1:k);
+
+    if do_plot
+        figure();
+        plot(real(sym_estimates), imag(sym_estimates), '.');
+        title('Recovered Symbols');
+        xlabel('Real'); ylabel('Imaginary');
+        axis equal; grid on;
+
+        figure();
+        plot(offset_history);
+        title('Timing Offset Convergence');
+        xlabel('Symbol Index'); ylabel('\tau');
+        grid on;
+    end
 end
 
 
@@ -205,89 +269,6 @@ function str = apsk2letters(f)
 end
 
 
-
-function [sym_estimates, offset_history] = timing_recovery_DD(x, n, oversamp, pulse_half_len,do_plot)
-    % TIMING_RECOVERY_DD  Decision-directed timing recovery via gradient descent.
-    %
-    % Inputs:
-    %   x              - received signal after matched filter (oversampled)
-    %   n              - number of symbols expected
-    %   oversamp       - oversampling factor (samples per symbol), e.g. 2
-    %   pulse_half_len - half-length of pulse shape in symbols, e.g. 50
-    %
-    % Outputs:
-    %   sym_estimates  - recovered symbol values xs[k]
-    %   offset_history - timing offset tau at each symbol iteration
-
-    if nargin < 4, do_plot = true; end
-    step_size  = 0.01;   % mu: gradient step (larger = faster but may diverge)
-    deriv_step = 0.1;    % delta: small shift for numerical derivative of x
-    
-    % --- Constellation alphabet for 4-PAM hard decisions ---
-    alphabet = [-3, -1, 1, 3];
-    
-    % --- Initialize ---
-    % Start after initial filter transient to avoid edge effects
-    sample_pos     = pulse_half_len * oversamp + 1;
-    timing_offset  = 0;              % initial timing correction guess
-    sym_estimates  = zeros(1, n);
-    offset_history = zeros(1, n);
-    k = 0;                           % symbol counter
-    
-    % --- Main loop: iterate over each symbol period ---
-    while sample_pos < length(x) - 2 * pulse_half_len * oversamp
-    
-        k = k + 1;
-    
-        % 1. Interpolate received signal at current timing estimate
-        x_now   = interpsinc(x, sample_pos + timing_offset,              pulse_half_len);
-    
-        % 2. Interpolate slightly right and left for numerical derivative
-        x_right = interpsinc(x, sample_pos + timing_offset + deriv_step, pulse_half_len);
-        x_left  = interpsinc(x, sample_pos + timing_offset - deriv_step, pulse_half_len);
-    
-        % 3. Estimate slope: dx/d(tau) at current position
-        slope = x_right - x_left;
-    
-        % 4. Hard decision: snap to nearest 4-PAM symbol
-        decision = quantalph(x_now, alphabet);
-    
-        % 5. DD update: nudge timing_offset to reduce (decision - x_now)^2
-        %    gradient of cluster variance w.r.t. tau:
-        %    d/dtau (decision - x(tau))^2 = -2*(decision - x_now)*slope
-        timing_offset = timing_offset + step_size * slope * (decision - x_now);
-    
-        % 6. Advance to next symbol, save state
-        sample_pos     = sample_pos + oversamp;
-        sym_estimates(k)  = x_now;
-        offset_history(k) = timing_offset;
-    
-    end
-    
-    % Trim unused trailing zeros
-    sym_estimates  = sym_estimates(1:k);
-    offset_history = offset_history(1:k);
-    
-    if do_plot == true
-        % plot symbol estimates
-        figure();
-        plot(sym_estimates, '.');
-        title('Symbol Estimates');
-        xlabel('Symbol Index');
-        ylabel('Amplitude');
-        grid on;
-        
-        % plot timing offset estimates
-        figure();
-        plot(offset_history);
-        title('Timing Offset Estimates');
-        xlabel('Symbol Index');
-        ylabel('tau');
-        grid on;
-    end
-
-end
-
 function plotconstellation(CONSTELLATION)
     plot(real(CONSTELLATION), imag(CONSTELLATION), 'bo', 'MarkerSize', 10, 'LineWidth', 2)
     grid on
@@ -296,6 +277,3 @@ function plotconstellation(CONSTELLATION)
     yline(0, 'k--', 'LineWidth', 1.2);
     title('16-Point Constellation')
 end
-
-
-

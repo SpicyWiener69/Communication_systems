@@ -1,0 +1,280 @@
+%ideal_16apsk.m:  idealized 16-APSK transmission system
+
+clear all;
+close all;
+
+%% === SYSTEM PARAMETERS ===
+global GAMMA CONSTELLATION GRAY_MAP
+
+% Constellation geometry
+GAMMA = 3.15;
+r_inner = sqrt(16 / (4 + 12*GAMMA^2));
+r_outer = GAMMA * r_inner;
+inner_ring = r_inner * exp(1j * (pi/4  + (0:3)  * pi/2));
+outer_ring = r_outer * exp(1j * (pi/12 + (0:11) * pi/6));
+CONSTELLATION = [inner_ring, outer_ring];
+GRAY_MAP = [6 15 9 12 5 16 10 11 7 14 8 13 1 4 2 3];
+
+% Timing
+symbol_period  = 1;
+oversamp       = 100;
+pulse_half_len = 50;
+
+% Carrier
+carrier_freq = 20;
+
+%% === TRANSMITTER ===
+str = 'p';
+str = 'hello 123$%^&ABZ'
+disp("message")
+disp(str)
+[symbols, num_symbols, tx_passband, t] = transmit(str, oversamp, pulse_half_len, carrier_freq, symbol_period);
+
+%% === RECEIVER ===
+[soft_decisions, hard_decisions] = receive(tx_passband, t, oversamp, pulse_half_len, carrier_freq, num_symbols, true);
+
+%% === ASSESSMENT ===
+[cluster_var, symbol_error_pct, reconstructed_message] = assess(soft_decisions, hard_decisions, symbols);
+disp(cluster_var)
+disp(symbol_error_pct)
+disp("reconstructed:")
+disp(reconstructed_message)
+
+
+%% === FUNCTIONS ===
+
+function [symbols, num_symbols, tx_passband, t] = transmit(str, oversamp, pulse_half_len, carrier_freq, symbol_period, do_plot)
+    if nargin < 7, do_plot = true; end
+
+    symbols     = letters2apsk(str);
+    num_symbols = length(symbols);
+
+    % Upsample
+    grid_len = num_symbols * oversamp + 1000;
+    up_i = zeros(1, grid_len);
+    up_q = zeros(1, grid_len);
+    up_i(1:oversamp:num_symbols*oversamp) = real(symbols);
+    up_q(1:oversamp:num_symbols*oversamp) = imag(symbols);
+
+    % Pulse shape
+    pulse = hamming(oversamp);
+    %pulse = srrc(10, 0.3, oversamp, 0);
+    tx_i  = filter(pulse, 1, up_i);
+    tx_q  = filter(pulse, 1, up_q);
+    if do_plot, figure(), plotspec(tx_i + 1j*tx_q, 1/oversamp); end
+
+    % Time vector with timing offset
+    t = (1/oversamp : 1/oversamp : length(tx_i)/oversamp) * symbol_period;
+
+    % IQ modulate
+    carrier_i   =  cos(2*pi*carrier_freq*t);
+    carrier_q   = -sin(2*pi*carrier_freq*t);
+    tx_passband = tx_i.*carrier_i + tx_q.*carrier_q;
+    if do_plot, figure(), plotspec(tx_passband, 1/oversamp); end
+end
+
+
+function [demod_i, demod_q] = iq_demodulate(tx_passband, t, carrier_freq, oversamp, do_plot)
+    if nargin < 5, do_plot = true; end
+
+    carrier_i = cos(2*pi*carrier_freq*t);
+    carrier_q = -sin(2*pi*carrier_freq*t);
+    demod_i   = tx_passband .* carrier_i;
+    demod_q   = tx_passband .* carrier_q;
+    if do_plot, figure(), plotspec(demod_i + 1j*demod_q, 1/oversamp); end
+end
+
+
+function [filtered_i, filtered_q, lpf] = lowpass_filter(demod_i, demod_q, pulse_half_len, oversamp, do_plot)
+    if nargin < 5, do_plot = true; end
+
+    lpf_band_edges = [0 0.1 0.2 1];
+    lpf_amplitudes = [1 1 0 0];
+    lpf            = firpm(pulse_half_len, lpf_band_edges, lpf_amplitudes);
+    if do_plot, figure(), freqz(lpf); end
+
+    filtered_i = 2 * filter(lpf, 1, demod_i);
+    filtered_q = 2 * filter(lpf, 1, demod_q);
+end
+
+
+function [mf_i, mf_q, baseband] = matched_filter(filtered_i, filtered_q, oversamp, do_plot)
+    if nargin < 4, do_plot = true; end
+
+    pulse    = hamming(oversamp);
+    %pulse = srrc(10, 0.3, oversamp, 0);
+    mf       = fliplr(pulse) / (pow(pulse) * oversamp);
+    mf_i     = filter(mf, 1, filtered_i);
+    mf_q     = filter(mf, 1, filtered_q);
+    baseband = mf_i + 1j*mf_q;
+    if do_plot, figure(), plotspec(baseband, 1/oversamp); end
+end
+
+
+function plot_eye_diagram(mf_i, oversamp, pulse_half_len, do_plot)
+    if nargin < 4, do_plot = true; end
+    if ~do_plot, return; end
+
+    sample_start = 0.5*pulse_half_len + oversamp;
+    num_eyes     = floor((length(mf_i) - sample_start - 1) / (4*oversamp));
+    figure()
+    plot(reshape(mf_i(sample_start : sample_start + num_eyes*4*oversamp - 1), 4*oversamp, num_eyes));
+    axis([1 4*oversamp -2 2])
+    grid
+end
+
+
+function [soft_decisions, hard_decisions] = receive(tx_passband, t, oversamp, pulse_half_len, carrier_freq, num_symbols, do_plot)
+    if nargin < 7, do_plot = true; end
+
+    [demod_i, demod_q]       = iq_demodulate(tx_passband, t, carrier_freq, oversamp, do_plot);
+    [filtered_i, filtered_q] = lowpass_filter(demod_i, demod_q, pulse_half_len, oversamp, do_plot);
+    [mf_i, mf_q, baseband]   = matched_filter(filtered_i, filtered_q, oversamp, do_plot);
+    plot_eye_diagram(mf_i, oversamp, pulse_half_len, do_plot);
+
+    [soft_decisions, ~]      = timing_recovery_DD(baseband, num_symbols, oversamp, pulse_half_len, do_plot);
+    %soft_decisions               = downsample_to_symbols(baseband, oversamp, pulse_half_len, num_symbols, do_plot);
+    hard_decisions           = decide(soft_decisions);
+end
+
+
+function hard_decisions = decide(soft_decisions)
+    global CONSTELLATION
+    hard_decisions = zeros(size(soft_decisions));
+    for n = 1:length(soft_decisions)
+        [~, idx]          = min(abs(soft_decisions(n) - CONSTELLATION));
+        hard_decisions(n) = CONSTELLATION(idx);
+    end
+end
+
+function soft_decisions = downsample_to_symbols(baseband, oversamp, pulse_half_len, num_symbols, do_plot)
+    if nargin < 5, do_plot = true; end
+
+    sample_start   = 0.5*pulse_half_len + oversamp;
+    soft_decisions = baseband(sample_start : oversamp : sample_start + (num_symbols-1)*oversamp);
+    if do_plot, figure(), plot(real(soft_decisions), imag(soft_decisions), '*'); end
+end
+
+
+function [sym_estimates, offset_history] = timing_recovery_DD(x, n, oversamp, pulse_half_len, do_plot)
+    if nargin < 5, do_plot = true; end
+
+    global CONSTELLATION
+
+    step_size  = 0.01;
+    deriv_step = 0.1;
+
+    sample_pos     = pulse_half_len + 1;
+    timing_offset  = 0;
+    sym_estimates  = zeros(1, n);
+    offset_history = zeros(1, n);
+    k = 0;
+    sample_pos =  0.5*pulse_half_len + oversamp;
+   % while sample_pos < length(x) - 2 * pulse_half_len * oversamp
+    while k < n && sample_pos < length(x) - pulse_half_len
+        k = k + 1;
+
+        % complex-aware sinc interpolation
+        x_now   = interpsinc(real(x), sample_pos + timing_offset,              pulse_half_len) ...
+                + 1j * interpsinc(imag(x), sample_pos + timing_offset,              pulse_half_len);
+
+        x_right = interpsinc(real(x), sample_pos + timing_offset + deriv_step, pulse_half_len) ...
+                + 1j * interpsinc(imag(x), sample_pos + timing_offset + deriv_step, pulse_half_len);
+
+        x_left  = interpsinc(real(x), sample_pos + timing_offset - deriv_step, pulse_half_len) ...
+                + 1j * interpsinc(imag(x), sample_pos + timing_offset - deriv_step, pulse_half_len);
+
+        slope = x_right - x_left;
+
+        % hard decision against 16-APSK constellation
+        [~, idx] = min(abs(x_now - CONSTELLATION));
+        decision = CONSTELLATION(idx);
+
+        % DD update
+        timing_offset = timing_offset + step_size * real(slope * conj(decision - x_now));
+
+        sample_pos        = sample_pos + oversamp;
+        sym_estimates(k)  = x_now;
+        offset_history(k) = timing_offset;
+    end
+
+    sym_estimates  = sym_estimates(1:k);
+    offset_history = offset_history(1:k);
+
+    if do_plot
+        figure();
+        plot(real(sym_estimates), imag(sym_estimates), '.');
+        title('Recovered Symbols');
+        xlabel('Real'); ylabel('Imaginary');
+        axis equal; grid on;
+
+        figure();
+        plot(offset_history);
+        title('Timing Offset Convergence');
+        xlabel('Symbol Index'); ylabel('\tau');
+        grid on;
+    end
+end
+
+
+function [cluster_var, symbol_error_pct, reconstructed_message] = assess(soft_decisions, hard_decisions, symbols, do_plot)
+    if nargin < 4, do_plot = true; end
+    global CONSTELLATION
+
+    cluster_var = (hard_decisions - soft_decisions) * (hard_decisions - soft_decisions)' / length(hard_decisions);
+
+    num_decided  = length(hard_decisions);
+    ref_symbols  = symbols(1:num_decided);
+    idx_decided  = zeros(1, num_decided);
+    idx_ref      = zeros(1, num_decided);
+    for n = 1:num_decided
+        [~, idx_decided(n)] = min(abs(hard_decisions(n) - CONSTELLATION));
+        [~, idx_ref(n)]     = min(abs(ref_symbols(n)    - CONSTELLATION));
+    end
+    symbol_error_pct      = 100 * sum(idx_decided ~= idx_ref) / num_decided;
+    reconstructed_message = apsk2letters(hard_decisions);
+end
+
+
+function f = letters2apsk(str)
+    global GRAY_MAP CONSTELLATION
+    num_chars = length(str);
+    f = zeros(1, 2*num_chars);
+    for k = 0:num_chars-1
+        ascii_val   = double(str(k+1));
+        high_nibble = floor(ascii_val / 16);
+        low_nibble  = mod(ascii_val, 16);
+        f(2*k+1)    = CONSTELLATION(GRAY_MAP(high_nibble + 1));
+        f(2*k+2)    = CONSTELLATION(GRAY_MAP(low_nibble  + 1));
+    end
+end
+
+
+function str = apsk2letters(f)
+    global GRAY_MAP CONSTELLATION
+    inv_gray = zeros(1, 16);
+    for i = 1:16
+        inv_gray(GRAY_MAP(i)) = i - 1;
+    end
+    num_chars = length(f) / 2;
+    str       = char(zeros(1, num_chars));
+    for k = 0:num_chars-1
+        sym_high      = f(2*k+1);
+        sym_low       = f(2*k+2);
+        [~, idx_high] = min(abs(sym_high - CONSTELLATION));
+        [~, idx_low]  = min(abs(sym_low  - CONSTELLATION));
+        high_nibble   = inv_gray(idx_high);
+        low_nibble    = inv_gray(idx_low);
+        str(k+1)      = char(high_nibble * 16 + low_nibble);
+    end
+end
+
+
+function plotconstellation(CONSTELLATION)
+    plot(real(CONSTELLATION), imag(CONSTELLATION), 'bo', 'MarkerSize', 10, 'LineWidth', 2)
+    grid on
+    axis equal
+    xline(0, 'k--', 'LineWidth', 1.2);
+    yline(0, 'k--', 'LineWidth', 1.2);
+    title('16-Point Constellation')
+end
