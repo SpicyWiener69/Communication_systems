@@ -33,7 +33,7 @@ m_combined = [s_train m];
 [xi, xq] = upconvert(upconvert_times,m_combined);
 
 
-figure(2), plotspec(xi + 1j*xq, 1/100);
+figure(), plotspec(xi + 1j*xq, 1/100);
 title('Baseband 16APSK Signal')
 
 
@@ -41,7 +41,7 @@ title('Baseband 16APSK Signal')
 T = 1; M = 100; fc = 20;
 [r, t] = iq_modulate(xi, xq, T, M, fc);
 
-figure(3), plotspec(r, 1/M)
+figure(), plotspec(r, 1/M)
 title('tranmitted 16APSK Signal')
 
 
@@ -49,11 +49,13 @@ title('tranmitted 16APSK Signal')
 r_channel = [0.5+0.1j, 1+0.2j, -0.6+0.3j];
 channel_sig = filter(r_channel, 1, r);
 
+figure(), plotspec(channel_sig, 1/M)
+title('recieved 16APSK Signal')
 
 %% === RECEIVER: COHERENT MIXING ===
 [x2_i, x2_q] = coherent_mix(channel_sig, t, fc);
 
-figure(4), plotspec(x2_i + 1j*x2_q, 1/M)
+figure(), plotspec(x2_i + 1j*x2_q, 1/M)
 title('Signal After Coherent Mixing')
 
 
@@ -61,7 +63,7 @@ title('Signal After Coherent Mixing')
 fl = 50;
 [x3_i, x3_q, b_lpf] = lowpass_filter(x2_i, x2_q, fl);
 
-figure(5), freqz(b_lpf)
+figure(), freqz(b_lpf)
 title('Low Pass Filter Frequency Response')
 
 
@@ -69,7 +71,7 @@ title('Low Pass Filter Frequency Response')
 M = 100;
 [y, yi, yq] = matched_filter(x3_i, x3_q, M);
 
-figure(6), plotspec(y, 1/M)
+figure(), plotspec(y, 1/M)
 title('Matched Filter Output')
 
 
@@ -82,7 +84,7 @@ plot_eye_diagram(yi, k0, M);
 N = length(m_combined);
 [z, best_k, cost, k0] = timing_recovery(y, N, M, k0, CONSTELLATION);
 
-figure(8)
+figure()
 offset = (0:M-1)/M;
 plot(offset, cost); grid
 xlabel('timing offset \tau'); ylabel('value of cost function')
@@ -92,7 +94,7 @@ best_ii = best_k - k0 + 1;
 plot(offset(best_ii), cost(best_ii), 'ro', 'MarkerSize', 10, 'LineWidth', 2)
 hold off
 
-figure(9)
+figure()
 plot(real(z), imag(z), 'b*'); hold on
 plot(real(CONSTELLATION), imag(CONSTELLATION), 'ro', 'MarkerSize', 10, 'LineWidth', 2)
 hold off; grid on; axis equal
@@ -124,7 +126,7 @@ m_ref     = m(1:length(z_data_eq));
 %% === DECISION DEVICE ===
 mprime = decision_device(z_data_eq, CONSTELLATION);
 
-figure(10)
+figure()
 plot(real(mprime), imag(mprime), 'b*'); hold on
 plot(real(CONSTELLATION), imag(CONSTELLATION), 'ro', 'MarkerSize', 10, 'LineWidth', 2)
 hold off; grid on; axis equal
