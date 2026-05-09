@@ -30,11 +30,6 @@ m  = letters2apsk(str);
 upconvert_times = 100;
 m_combined = [s_train m];
 
-s_train(1:10)
-%m(1:10)
-
-%[xi_data,xq_data] = upconvert(upconvert_times,m)
-
 [xi, xq] = upconvert(upconvert_times,m_combined);
 
 
@@ -47,11 +42,16 @@ T = 1; M = 100; fc = 20;
 [r, t] = iq_modulate(xi, xq, T, M, fc);
 
 figure(3), plotspec(r, 1/M)
-title('Passband 16APSK Signal')
+title('tranmitted 16APSK Signal')
+
+
+%% === CHANNEL EFFECTS: COHERENT MIXING ===
+r_channel = [0.5+0.1j, 1+0.2j, -0.6+0.3j];
+channel_sig = filter(r_channel, 1, r);
 
 
 %% === RECEIVER: COHERENT MIXING ===
-[x2_i, x2_q] = coherent_mix(r, t, fc);
+[x2_i, x2_q] = coherent_mix(channel_sig, t, fc);
 
 figure(4), plotspec(x2_i + 1j*x2_q, 1/M)
 title('Signal After Coherent Mixing')
@@ -71,8 +71,6 @@ M = 100;
 
 figure(6), plotspec(y, 1/M)
 title('Matched Filter Output')
-
-
 
 
 %% === EYE DIAGRAM ===
@@ -118,13 +116,13 @@ fprintf('alignment lag = %d samples (should be 0)\n', lags(peak));
 %%===ADD EQUALIZER ==========
 % equalizer_order    = 15;
 % delta_eq = 8;
-%[f, Jmin] = equalize_design(y_train, s_train, equalizer_order, equalizer_delta);
-%z_eq      = equalize_apply(z, f, delta_eq);
-
+[f, Jmin] = equalize_design(z_train, s_train, equalizer_order, equalizer_delta);
+z_data_eq      = equalize_apply(z_data, f, equalizer_delta);
+m_ref     = m(1:length(z_data_eq));
 
 
 %% === DECISION DEVICE ===
-mprime = decision_device(z_data, CONSTELLATION);
+mprime = decision_device(z_data_eq, CONSTELLATION);
 
 figure(10)
 plot(real(mprime), imag(mprime), 'b*'); hold on
@@ -136,7 +134,7 @@ legend('Detected symbols', 'Ideal constellation')
 
 
 %% === PERFORMANCE METRICS ===
-[cvar, pererr, reconstructed_message] = evaluate_performance(mprime, z_data, m, CONSTELLATION)
+[cvar, pererr, reconstructed_message] = evaluate_performance(mprime, z_data_eq, m, CONSTELLATION)
 
 
 %% =========================================================
@@ -369,3 +367,85 @@ function plotconstellation(CONSTELLATION)
     yline(0, 'k--', 'LineWidth', 1.2);
     title('16-Point Constellation')
 end
+
+
+
+function [f, Jmin] = equalize_design(z, m, n, delta)
+% equalize_design  Solve for LS equalizer taps using training symbols.
+%
+% Uses the Normal Equations:  f = (R'R)^{-1} R'S
+% where R is the Toeplitz convolution matrix of z,
+% and S is the desired output (training symbols delayed by delta).
+%
+% INPUTS:
+%   z      - received symbol-rate samples, complex row vector, length N
+%            output of timing_recovery()
+%   m      - known TX symbols (training sequence), complex row vector
+%            output of transmitter(); same m used throughout pipeline
+%   n      - equalizer order; filter has n+1 taps
+%   delta  - equalizer delay in samples; recommend delta ~ n/2
+%            must satisfy delta <= n * channel_length
+%
+% OUTPUTS:
+%   f      - equalizer tap coefficients, complex column vector, length n+1
+%   Jmin   - minimum MSE for this f and delta (real scalar)
+
+    % sanity check
+    if delta > n * 10
+        warning('equalize_design: delta may be too large relative to n.');
+    end
+
+    p = length(z) - delta;
+
+    % --- build Toeplitz convolution matrix R from received signal ---
+    % each row is a window of n+1 samples of z
+    R = toeplitz(z(n+1:p), z(n+1:-1:1));
+
+    % --- build desired output vector S (training, shifted by delta) ---
+    S = m(n+1-delta : p-delta).';   % complex column vector
+
+    % --- LS solution via normal equations ---
+    % use \ for numerical stability instead of explicit inv()
+    RtR = R' * R;
+    f   = RtR \ (R' * S);
+
+    % --- minimum achievable MSE ---
+    Jmin = real(S'*S - S'*R*(RtR \ (R'*S)));
+
+    fprintf('[equalize_design]  n=%d  delta=%d  Jmin=%.6f\n', n, delta, Jmin);
+end
+
+
+% ---------------------------------------------------------
+
+function z_eq = equalize_apply(z, f, delta)
+% equalize_apply  Apply pre-computed FIR equalizer to received samples.
+%
+% Filters z with tap vector f, then trims the leading delta samples
+% to realign the output with the TX symbol timing.
+%
+% INPUTS:
+%   z      - received symbol-rate samples, complex row vector
+%            can be the training block or a new data block
+%   f      - equalizer taps from equalize_design(), complex column vector
+%   delta  - same delta used in equalize_design()
+%
+% OUTPUT:
+%   z_eq   - equalized symbol-rate samples, complex row vector
+%            length = length(z) - delta
+%            feeds directly into decision_device()
+%
+% NOTE: the caller must trim the reference symbol vector m consistently:
+%       m_ref = m(1 : length(z_eq))
+
+    % apply FIR equalizer
+    y_full = filter(f, 1, z);
+
+    % trim leading delta samples to realign with TX symbols
+    z_eq = y_full(delta+1 : end);
+    
+    figure()
+    plot(real(z_eq), imag(z_eq), '.', 'MarkerSize', 4);
+    title('Received r'); xlabel('I'); ylabel('Q'); grid on; axis equal;
+end
+
