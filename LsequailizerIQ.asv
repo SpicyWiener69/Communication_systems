@@ -35,10 +35,14 @@ channeled_data = channel_sig(t_end+1 : end);
 
 % --- Equalizer taps ---
 figure()
-stem(0:length(f)-1, abs(f), 'filled');
+stem(0:length(taps)-1, abs(taps), 'filled');
 title('Equalizer |f|'); xlabel('Tap'); ylabel('Magnitude'); grid on;
 
 z_eq       = equalize_apply(channeled_data, f, delta);
+
+figure()
+plot(real(r), imag(r), '.', 'MarkerSize', 4);
+title('Received r'); xlabel('I'); ylabel('Q'); grid on; axis equal;
 
 
 function [f, Jmin] = equalize_design(z, m, n, delta)

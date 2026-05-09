@@ -23,22 +23,20 @@ N_train = equalizer_order + equalizer_delta + 10*(equalizer_order+1);   % = 183 
 train_idx  = randi(length(CONSTELLATION), 1, N_train);
 s_train    = CONSTELLATION(train_idx);   % known at both TX and RX
 
-str = '012345 hello world jzxv//[]-=apsk';
+str = '012345 hello world jzxv//[]-=';
 %[xi, xq, m] = transmitter(str);
 
 m  = letters2apsk(str);    
 upconvert_times = 100;
-m_combined = [s_train m];
+[xi,xq] = upconvert(upconvert_times,m)
 
-s_train(1:10)
-%m(1:10)
+xi_train, xq_train = upconvert(upconvert_times,s_train)
 
-%[xi_data,xq_data] = upconvert(upconvert_times,m)
-
-[xi, xq] = upconvert(upconvert_times,m_combined);
+%add training and str message
 
 
-figure(2), plotspec(xi + 1j*xq, 1/100);
+
+figure(2), plotspec(xi + 1j*xq, 1/100)
 title('Baseband 16APSK Signal')
 
 
@@ -73,6 +71,11 @@ figure(6), plotspec(y, 1/M)
 title('Matched Filter Output')
 
 
+%%=== TRAINING DATA SPLIT ===
+train_end   = N_train * M;
+y_train     = y(1 : train_end);          % T/M-spaced training block
+y_data      = y(train_end+1 : end);      % T/M-spaced data block
+
 
 
 %% === EYE DIAGRAM ===
@@ -81,7 +84,7 @@ plot_eye_diagram(yi, k0, M);
 
 
 %% === TIMING RECOVERY (DD) ===
-N = length(m_combined);
+N = length(m);
 [z, best_k, cost, k0] = timing_recovery(y, N, M, k0, CONSTELLATION);
 
 figure(8)
@@ -102,29 +105,18 @@ xlabel('I'); ylabel('Q')
 title('16APSK Samples After Timing Recovery')
 legend('Received samples', 'Ideal constellation')
 
-%%=== TRAINING DATA SPLIT ===
-train_end   = N_train ;
-z_train     = z(1 : train_end);          % T/M-spaced training block
-z_data      = z(train_end+1 : end);      % T/M-spaced data block
 
 
-% quick sanity check: correlation between z_train and s_train
-% should peak at lag 0 if alignment is correct
-[xc, lags] = xcorr(z_train, s_train);
-[~, peak]  = max(abs(xc));
-fprintf('alignment lag = %d samples (should be 0)\n', lags(peak));
-
-
-%%===ADD EQUALIZER ==========
+% ── ADD EQUALIZER ─────────────────────────────────────────────
 % equalizer_order    = 15;
 % delta_eq = 8;
-%[f, Jmin] = equalize_design(y_train, s_train, equalizer_order, equalizer_delta);
-%z_eq      = equalize_apply(z, f, delta_eq);
-
+% [f, Jmin] = equalize_design(z, m, equalizer_order, delta_eq);
+% z_eq      = equalize_apply(z, f, delta_eq);
+% ──────────────────────────────────────────────────────────────
 
 
 %% === DECISION DEVICE ===
-mprime = decision_device(z_data, CONSTELLATION);
+mprime = decision_device(z, CONSTELLATION);
 
 figure(10)
 plot(real(mprime), imag(mprime), 'b*'); hold on
@@ -136,7 +128,7 @@ legend('Detected symbols', 'Ideal constellation')
 
 
 %% === PERFORMANCE METRICS ===
-[cvar, pererr, reconstructed_message] = evaluate_performance(mprime, z_data, m, CONSTELLATION)
+[cvar, pererr, reconstructed_message] = evaluate_performance(mprime, z, m, CONSTELLATION)
 
 
 %% =========================================================
