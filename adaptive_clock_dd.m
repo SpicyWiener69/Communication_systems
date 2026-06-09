@@ -24,9 +24,8 @@ pulse_half_len = 50;
 carrier_freq = 20;
 
 %% === TRANSMITTER ===
-str = 'p';
-str = 'hello 123$%^&ABZ'
-disp("message")
+str = 'hello 123$%^&ABZ';
+disp("message:")
 disp(str)
 [symbols, num_symbols, tx_passband, t] = transmit(str, oversamp, pulse_half_len, carrier_freq, symbol_period);
 

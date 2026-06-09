@@ -1,0 +1,161 @@
+clear all; close all;
+
+b = [0.5+0.1j, 1+0.2j, -0.6+0.3j];
+m = 1000;
+n_eq   = 15;
+delta  = 8;
+
+% full signal
+random_sigs = (sign(randn(1,m)) + 1j*sign(randn(1,m))) / sqrt(2);
+
+% channel applied to full signal
+channel_sig = filter(b, 1, random_sigs);
+
+% training window — long enough, skip early transient
+ch_len        = length(b);
+transient     = ch_len - 1;                    % = 2 samples to skip
+training_length = n_eq + delta + 10*(n_eq+1);  % = 183 minimum
+t_start       = transient + 1;                 % = 3
+t_end         = t_start + training_length - 1; % = 185
+
+training           = random_sigs(t_start : t_end);   % clean
+channeled_training = channel_sig(t_start : t_end);   % received
+
+
+stem(0:length(b)-1, abs(b), 'filled');
+title('Channel |b|'); xlabel('Tap'); ylabel('Magnitude'); grid on;
+
+% data block starts after training
+data           = random_sigs(t_end+1 : end);
+channeled_data = channel_sig(t_end+1 : end);
+
+
+% design on training, apply to data
+[f, Jmin]  = equalize_design(channeled_training, training, n_eq, delta);
+
+% --- Equalizer taps ---
+figure()
+stem(0:length(f)-1, abs(f), 'filled');
+title('Equalizer |f|'); xlabel('Tap'); ylabel('Magnitude'); grid on;
+
+z_eq       = equalize_apply(channeled_data, f, delta);
+
+
+function [f, Jmin] = equalize_design(z, m, n, delta)
+% equalize_design  Solve for LS equalizer taps using training symbols.
+%
+% Uses the Normal Equations:  f = (R'R)^{-1} R'S
+% where R is the Toeplitz convolution matrix of z,
+% and S is the desired output (training symbols delayed by delta).
+%
+% INPUTS:
+%   z      - received symbol-rate samples, complex row vector, length N
+%            output of timing_recovery()
+%   m      - known TX symbols (training sequence), complex row vector
+%            output of transmitter(); same m used throughout pipeline
+%   n      - equalizer order; filter has n+1 taps
+%   delta  - equalizer delay in samples; recommend delta ~ n/2
+%            must satisfy delta <= n * channel_length
+%
+% OUTPUTS:
+%   f      - equalizer tap coefficients, complex column vector, length n+1
+%   Jmin   - minimum MSE for this f and delta (real scalar)
+
+    % sanity check
+    if delta > n * 10
+        warning('equalize_design: delta may be too large relative to n.');
+    end
+
+    p = length(z) - delta;
+
+    % --- build Toeplitz convolution matrix R from received signal ---
+    % each row is a window of n+1 samples of z
+    R = toeplitz(z(n+1:p), z(n+1:-1:1));
+
+    % --- build desired output vector S (training, shifted by delta) ---
+    S = m(n+1-delta : p-delta).';   % complex column vector
+
+    % --- LS solution via normal equations ---
+    % use \ for numerical stability instead of explicit inv()
+    RtR = R' * R;
+    f   = RtR \ (R' * S);
+
+    % --- minimum achievable MSE ---
+    Jmin = real(S'*S - S'*R*(RtR \ (R'*S)));
+
+    fprintf('[equalize_design]  n=%d  delta=%d  Jmin=%.6f\n', n, delta, Jmin);
+end
+
+
+% ---------------------------------------------------------
+
+function z_eq = equalize_apply(z, f, delta)
+% equalize_apply  Apply pre-computed FIR equalizer to received samples.
+%
+% Filters z with tap vector f, then trims the leading delta samples
+% to realign the output with the TX symbol timing.
+%
+% INPUTS:
+%   z      - received symbol-rate samples, complex row vector
+%            can be the training block or a new data block
+%   f      - equalizer taps from equalize_design(), complex column vector
+%   delta  - same delta used in equalize_design()
+%
+% OUTPUT:
+%   z_eq   - equalized symbol-rate samples, complex row vector
+%            length = length(z) - delta
+%            feeds directly into decision_device()
+%
+% NOTE: the caller must trim the reference symbol vector m consistently:
+%       m_ref = m(1 : length(z_eq))
+
+    % apply FIR equalizer
+    y_full = filter(f, 1, z);
+
+    % trim leading delta samples to realign with TX symbols
+    z_eq = y_full(delta+1 : end);
+    
+    figure()
+    plot(real(z_eq), imag(z_eq), '.', 'MarkerSize', 4);
+    title('Received r'); xlabel('I'); ylabel('Q'); grid on; axis equal;
+end
+
+
+
+
+
+
+
+
+% 
+% figure('Name','LS Equalizer Results','NumberTitle','off');
+% 
+% % --- Channel taps ---
+% subplot(2,3,1);
+% stem(0:length(b)-1, abs(b), 'filled');
+% title('Channel |b|'); xlabel('Tap'); ylabel('Magnitude'); grid on;
+% 
+% % --- Equalizer taps ---
+% subplot(2,3,2);
+% stem(0:length(taps)-1, abs(taps), 'filled');
+% title('Equalizer |f|'); xlabel('Tap'); ylabel('Magnitude'); grid on;
+% 
+% % --- Combined channel+equalizer ---
+% c = conv(b, taps.');
+% subplot(2,3,3);
+% stem(0:length(c)-1, abs(c), 'filled');
+% title('Combined |b*f|'); xlabel('Tap'); ylabel('Magnitude'); grid on;
+% 
+% % --- Received constellation ---
+% subplot(2,3,4);
+% plot(real(r), imag(r), '.', 'MarkerSize', 4);
+% title('Received r'); xlabel('I'); ylabel('Q'); grid on; axis equal;
+
+
+
+% % --- Decisions ---
+% subplot(2,3,6);
+% plot(real(dec), imag(dec), '.', 'MarkerSize', 4);
+% title(sprintf('Decisions (err=%d)', err));
+% xlabel('I'); ylabel('Q'); grid on; axis equal;
+
