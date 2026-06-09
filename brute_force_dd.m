@@ -68,8 +68,8 @@ title('Low Pass Filter Frequency Response')
 
 
 %% === RECEIVER: MATCHED FILTER ===
-M = 100;
-[y, yi, yq] = matched_filter(x3_i, x3_q, M);
+%%M = 100;
+[y, yi, yq] = matched_filter(x3_i, x3_q, upconvert_times);
 
 figure(), plotspec(y, 1/M)
 title('Matched Filter Output')
